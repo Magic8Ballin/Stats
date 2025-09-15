@@ -5,7 +5,7 @@ using CounterStrikeSharp.API.Core;
 using CounterStrikeSharp.API.Modules.Commands;
 using CounterStrikeSharp.API.Modules.Utils;
 using Microsoft.Extensions.Logging;
-using MySql.Data.MySqlClient;
+using MySqlConnector;
 using static CounterStrikeSharp.API.Core.Listeners;
 
 namespace Stats;
@@ -87,8 +87,8 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 	public override void Unload(bool hotReload)
 	{
 		//Store all sessions before unloading.
-		foreach (var accountid in PlayerStats.Keys) {
-			StoreSession(accountid);
+		foreach (var accountid in PlayerStats.Keys.ToList()) {
+			StoreSession(accountid, clear: false, force: true);
 		}
 
 		Connection?.Close();
@@ -109,19 +109,20 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		if (player == null) return;
 		var accountid = player.AuthorizedSteamID?.AccountId ?? -1;
 		if (accountid < 1) return;
+		if (!PlayerStats.TryGetValue(accountid, out var data)) return;
 
 		player.PrintToConsole("--------------------------------");
 		player.PrintToConsole("Session Stats:");
-		player.PrintToConsole("Name: " + PlayerStats[accountid].Name);
-		player.PrintToConsole("Kills: " + PlayerStats[accountid].Kills);
-		player.PrintToConsole("Deaths: " + PlayerStats[accountid].Deaths);
-		player.PrintToConsole("KDR: " + PlayerStats[accountid].KDR);
-		player.PrintToConsole("KPR: " + PlayerStats[accountid].KPR);
-		player.PrintToConsole("Rounds: " + PlayerStats[accountid].Rounds);
-		player.PrintToConsole("Opps: " + PlayerStats[accountid].Opps);
-		player.PrintToConsole("Knives: " + PlayerStats[accountid].Knives);
-		player.PrintToConsole("GLV: " + PlayerStats[accountid].GLV);
-		player.PrintToConsole("Map: " + PlayerStats[accountid].Map);
+		player.PrintToConsole("Name: " + data.Name);
+		player.PrintToConsole("Kills: " + data.Kills);
+		player.PrintToConsole("Deaths: " + data.Deaths);
+		player.PrintToConsole("KDR: " + data.KDR);
+		player.PrintToConsole("KPR: " + data.KPR);
+		player.PrintToConsole("Rounds: " + data.Rounds);
+		player.PrintToConsole("Opps: " + data.Opps);
+		player.PrintToConsole("Knives: " + data.Knives);
+		player.PrintToConsole("GLV: " + data.GLV);
+		player.PrintToConsole("Map: " + data.Map);
 		player.PrintToConsole("--------------------------------");
 	}
 
@@ -308,55 +309,49 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		if (player == null || !player.IsValid || player.IsBot || player.IsHLTV) return;
 		var accountid = player.AuthorizedSteamID?.AccountId ?? -1;
 		if (accountid < 1) return;
-		StoreSession(accountid, true);
+		StoreSession(accountid, clear: true, force: true);
 	}
 
 	public void OnMapEnd()
 	{
-		foreach (var accountid in PlayerStats.Keys) {
-			StoreSession(accountid, true);
+		foreach (var accountid in PlayerStats.Keys.ToList()) {
+			StoreSession(accountid, clear: true, force: true);
 		}
 	}
 
 	/*
 		* StoreSession
-		* Stores the session data for the player in the database.
-		* If the connection is down, it will cache the data instead.
+		* Stores the session data as a unique row (INSERT-only). Falls back to cache if MySQL is down.
 		*/
-	public void StoreSession(int accountid, bool clear = false)
+	public void StoreSession(int accountid, bool clear = false, bool force = false)
 	{
-		if (!ShouldStoreSession()) {
+		if (!force && !ShouldStoreSession()) {
+			return;
+		}
+
+		if (!PlayerStats.TryGetValue(accountid, out StatsData? stats)) {
+			if (clear) {
+				StopSession(accountid);
+			}
 			return;
 		}
 
 		if (Connection == null || Connection.State != System.Data.ConnectionState.Open) {
-			//Store the data via SQLite instead and sync it later if the MySql connection is down.
 			CacheSession(accountid, clear);
 			return;
 		}
 
-		Logger.LogInformation("Storing session for accountid: {accountid}", accountid);
+		Logger.LogInformation("Storing session (INSERT) for accountid: {accountid}", accountid);
 
-		if (PlayerStats.TryGetValue(accountid, out StatsData? stats)) {
-			var cmd = Connection.CreateCommand();
-			// First try to update existing session for this map
+		try {
+			using var cmd = Connection.CreateCommand();
 			cmd.CommandText = @"
-				UPDATE stats 
-				SET kills = kills + @kills,
-					deaths = deaths + @deaths,
-					rounds = rounds + @rounds,
-					knives = knives + @knives,
-					glv = @glv,
-					kdr = @kdr,
-					kpr = @kpr,
-					opps = @opps
-				WHERE accountid = @accountid 
-				AND map = @map 
-				AND DATE(saved_at) = CURDATE();
+				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map) 
+				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map);
 			";
 
-			// Add parameters
 			cmd.Parameters.AddWithValue("@accountid", accountid);
+			cmd.Parameters.AddWithValue("@name", stats.Name);
 			cmd.Parameters.AddWithValue("@kills", stats.Kills);
 			cmd.Parameters.AddWithValue("@deaths", stats.Deaths);
 			cmd.Parameters.AddWithValue("@kdr", stats.KDR);
@@ -367,26 +362,27 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			cmd.Parameters.AddWithValue("@glv", stats.GLV);
 			cmd.Parameters.AddWithValue("@map", stats.Map);
 
-			// If no rows were updated, insert new session
-			if (cmd.ExecuteNonQuery() == 0)
-			{
-				cmd.CommandText = @"
-					INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map) 
-					VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map)
-				";
-				cmd.ExecuteNonQuery();
+			cmd.ExecuteNonQuery();
+		} catch (Exception e) {
+			Logger.LogError(e, "Error while storing session to MySQL for accountid {accountid}: {message}", accountid, e.Message);
+			try {
+				CacheSession(accountid, clear);
+			} catch (Exception ce) {
+				Logger.LogError(ce, "Error while caching session to SQLite for accountid {accountid}: {message}", accountid, ce.Message);
+			}
+			return;
+		} finally {
+			if (clear) {
+				StopSession(accountid);
 			}
 		}
 
-		if (clear) {
-			StopSession(accountid);
-		}
+		TrySyncCacheIfPending();
 	}
 
 	/*
 		* CacheSession
-		* Caches the session data for the player in the SQLite database.
-		* If the connection is down, it will sync the data later if the MySql connection is back up.
+		* Caches the session as a unique row (INSERT-only). Will be synced later to MySQL.
 		*/
 	public void CacheSession(int accountid, bool clear = false)
 	{
@@ -395,28 +391,24 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			return;
 		}
 
-		Logger.LogInformation("Caching session for accountid: {accountid}", accountid);
+		if (!PlayerStats.TryGetValue(accountid, out StatsData? stats)) {
+			if (clear) {
+				StopSession(accountid);
+			}
+			return;
+		}
 
-		if (PlayerStats.TryGetValue(accountid, out StatsData? stats)) {
-			var cmd = SQLiteConnection.CreateCommand();
-			// First try to update existing session
+		Logger.LogInformation("Caching session (INSERT) for accountid: {accountid}", accountid);
+
+		try {
+			using var cmd = SQLiteConnection.CreateCommand();
 			cmd.CommandText = @"
-				UPDATE stats 
-				SET kills = kills + @kills,
-					deaths = deaths + @deaths,
-					rounds = rounds + @rounds,
-					knives = knives + @knives,
-					glv = @glv,
-					kdr = @kdr,
-					kpr = @kpr,
-					opps = @opps
-				WHERE accountid = @accountid 
-				AND map = @map 
-				AND DATE(saved_at) = DATE('now');
+				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map)
+				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map);
 			";
 
-			// Add parameters
 			cmd.Parameters.AddWithValue("@accountid", accountid);
+			cmd.Parameters.AddWithValue("@name", stats.Name);
 			cmd.Parameters.AddWithValue("@kills", stats.Kills);
 			cmd.Parameters.AddWithValue("@deaths", stats.Deaths);
 			cmd.Parameters.AddWithValue("@kdr", stats.KDR);
@@ -427,25 +419,19 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			cmd.Parameters.AddWithValue("@glv", stats.GLV);
 			cmd.Parameters.AddWithValue("@map", stats.Map);
 
-			// If no rows were updated, insert new session
-			if (cmd.ExecuteNonQuery() == 0)
-			{
-				cmd.CommandText = @"
-					INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map)
-					VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map)
-				";
-				cmd.ExecuteNonQuery();
+			cmd.ExecuteNonQuery();
+		} catch (Exception e) {
+			Logger.LogError(e, "Error while caching session to SQLite for accountid {accountid}: {message}", accountid, e.Message);
+		} finally {
+			if (clear) {
+				StopSession(accountid);
 			}
-		}
-
-		if (clear) {
-			StopSession(accountid);
 		}
 	}
 
 	/*
 		* SyncCache
-		* Syncs the cache data to the MySql database.
+		* Syncs cached rows into MySQL (INSERT-only), then clears the cache.
 		*/
 	public void SyncCache()
 	{
@@ -494,10 +480,6 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		Logger.LogInformation("Cache synced and cleared successfully.");
 	}
 
-	/*
-		* LoadSession
-		* Loads the session data for the player from the database.
-		*/
 	public void MySqlConnect()
 	{
 		Logger.LogInformation("Connecting to the MySql database...");
@@ -517,7 +499,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 					kdr FLOAT NOT NULL,
 					kpr FLOAT NOT NULL,
 					rounds INT NOT NULL,
-					opps INT NOT NULL,
+					opps FLOAT NOT NULL,
 					knives INT NOT NULL,
 					glv INT NOT NULL,
 					map VARCHAR(64) NOT NULL,
@@ -534,10 +516,6 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		}
 	}
 
-	/*
-		* SQLiteConnect
-		* Connects to the SQLite database.
-		*/
 	public void SQLiteConnect()
 	{
 		Logger.LogInformation("Connecting to the SQLite database...");
@@ -550,6 +528,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			createTableCmd.CommandText = @"
 				CREATE TABLE IF NOT EXISTS stats (
 					accountid INTEGER NOT NULL,
+					name TEXT NOT NULL,
 					kills INTEGER NOT NULL,
 					deaths INTEGER NOT NULL,
 					kdr REAL NOT NULL,
@@ -570,28 +549,16 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		}
 	}
 
-	/*
-		* CalculateAverage
-		* Calculates the average of a list of integers.
-		*/
 	public static float CalculateAverage(List<int> values)
 	{
-		return values.Count == 0 ? 0 : values.Sum() / values.Count;
+		return values.Count == 0 ? 0 : (float)values.Sum() / values.Count;
 	}
 
-	/*
-		* CalculateRatio
-		* Calculates the ratio of two integers.
-		*/
 	public static float CalculateRatio(int value1, int value2)
 	{
 		return value2 == 0 ? value1 : (float)value1 / value2;
 	}
 
-	/*
-		* ShouldStoreStatistics
-		* Checks if the statistics should be stored.
-		*/
 	public static bool ShouldStoreStats() {
 		if (Utilities.FindAllEntitiesByDesignerName<CCSGameRulesProxy>("cs_gamerules").First().GameRules!.WarmupPeriod) {
 			return false;
@@ -600,10 +567,6 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		return true;
 	}
 
-	/*
-		* ShouldStoreSession
-		* Checks if the session should be stored.
-		*/
 	public bool ShouldStoreSession()
 	{
 		if (Config.MinPlayers == 0) {
@@ -615,5 +578,20 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		}
 
 		return true;
+	}
+
+	private void TrySyncCacheIfPending()
+	{
+		try {
+			if (SQLiteConnection == null || SQLiteConnection.State != System.Data.ConnectionState.Open) return;
+			using var checkCmd = SQLiteConnection.CreateCommand();
+			checkCmd.CommandText = "SELECT 1 FROM stats LIMIT 1;";
+			var hasAny = checkCmd.ExecuteScalar();
+			if (hasAny != null && hasAny != DBNull.Value) {
+				SyncCache();
+			}
+		} catch (Exception e) {
+			Logger.LogError(e, "Error while attempting to sync cache after successful MySQL write: {message}", e.Message);
+		}
 	}
 }
