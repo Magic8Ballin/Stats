@@ -56,6 +56,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		public int Rounds { get; set; } = 0;
 		public float Opps { get; set; } = 0.0f;
 		public int Knives { get; set; } = 0;
+		public int Zues { get; set; } = 0;
 		public int GLV { get; set; } = 0;
 		public string Map { get; set; } = "";
 
@@ -121,6 +122,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		player.PrintToConsole("Rounds: " + data.Rounds);
 		player.PrintToConsole("Opps: " + data.Opps);
 		player.PrintToConsole("Knives: " + data.Knives);
+		player.PrintToConsole("Zues: " + data.Zues);
 		player.PrintToConsole("GLV: " + data.GLV);
 		player.PrintToConsole("Map: " + data.Map);
 		player.PrintToConsole("--------------------------------");
@@ -141,7 +143,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			}
 
 			cmd.CommandText = @"
-				SELECT name, kills, deaths, kdr, kpr, rounds, opps, knives, glv
+				SELECT name, kills, deaths, kdr, kpr, rounds, opps, knives, zues, glv
 				FROM stats 
 				WHERE map = @map
 				ORDER BY kills DESC
@@ -159,13 +161,13 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			}
 
 			player.PrintToConsole("--------------------------------");
-			player.PrintToConsole("Rank | Name | Kills | Deaths | KDR | KPR | Rounds | Opps | Knives | GLV");
+			player.PrintToConsole("Rank | Name | Kills | Deaths | KDR | KPR | Rounds | Opps | Knives | Zues | GLV");
 			player.PrintToConsole("--------------------------------");
 
 			int rank = 1;
 			while (reader.Read())
 			{
-				player.PrintToConsole($"{rank,4} | {reader["name"],-20} | {reader["kills"],5} | {reader["deaths"],6} | {reader["kdr"]:F2} | {reader["kpr"]:F2} | {reader["rounds"],6} | {reader["opps"]:F2} | {reader["knives"],6} | {reader["glv"],4}");
+				player.PrintToConsole($"{rank,4} | {reader["name"],-20} | {reader["kills"],5} | {reader["deaths"],6} | {reader["kdr"]:F2} | {reader["kpr"]:F2} | {reader["rounds"],6} | {reader["opps"]:F2} | {reader["knives"],6} | {reader["zues"],5} | {reader["glv"],4}");
 				rank++;
 			}
 
@@ -265,8 +267,13 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 				attackerStats.KPR = CalculateRatio(attackerStats.Kills, attackerStats.Rounds);
 
 				// Add a knife kill if the weapon is a knife.
-				if (@event.Weapon.Contains("knife")) {
+				if (@event.Weapon.Contains("knife", StringComparison.OrdinalIgnoreCase)) {
 					attackerStats.Knives++;
+				}
+
+				// Add a Zues kill if the weapon is taser.
+				if (@event.Weapon.Contains("taser", StringComparison.OrdinalIgnoreCase)) {
+					attackerStats.Zues++;
 				}
 
 				// GLV Rating
@@ -346,8 +353,8 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		try {
 			using var cmd = Connection.CreateCommand();
 			cmd.CommandText = @"
-				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map) 
-				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map);
+				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, zues, glv, map) 
+				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @zues, @glv, @map);
 			";
 
 			cmd.Parameters.AddWithValue("@accountid", accountid);
@@ -359,6 +366,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			cmd.Parameters.AddWithValue("@rounds", stats.Rounds);
 			cmd.Parameters.AddWithValue("@opps", stats.Opps);
 			cmd.Parameters.AddWithValue("@knives", stats.Knives);
+			cmd.Parameters.AddWithValue("@zues", stats.Zues);
 			cmd.Parameters.AddWithValue("@glv", stats.GLV);
 			cmd.Parameters.AddWithValue("@map", stats.Map);
 
@@ -403,8 +411,8 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 		try {
 			using var cmd = SQLiteConnection.CreateCommand();
 			cmd.CommandText = @"
-				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map)
-				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map);
+				INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, zues, glv, map)
+				VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @zues, @glv, @map);
 			";
 
 			cmd.Parameters.AddWithValue("@accountid", accountid);
@@ -416,6 +424,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			cmd.Parameters.AddWithValue("@rounds", stats.Rounds);
 			cmd.Parameters.AddWithValue("@opps", stats.Opps);
 			cmd.Parameters.AddWithValue("@knives", stats.Knives);
+			cmd.Parameters.AddWithValue("@zues", stats.Zues);
 			cmd.Parameters.AddWithValue("@glv", stats.GLV);
 			cmd.Parameters.AddWithValue("@map", stats.Map);
 
@@ -452,8 +461,8 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 			while (reader.Read()) {
 				var cmd = Connection.CreateCommand();
 				cmd.CommandText = @"
-					INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, glv, map, saved_at)
-					VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @glv, @map, @saved_at);
+					INSERT INTO stats (accountid, name, kills, deaths, kdr, kpr, rounds, opps, knives, zues, glv, map, saved_at)
+					VALUES (@accountid, @name, @kills, @deaths, @kdr, @kpr, @rounds, @opps, @knives, @zues, @glv, @map, @saved_at);
 				";
 
 				cmd.Parameters.AddWithValue("@accountid", reader["accountid"]);
@@ -465,6 +474,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 				cmd.Parameters.AddWithValue("@rounds", reader["rounds"]);
 				cmd.Parameters.AddWithValue("@opps", reader["opps"]);
 				cmd.Parameters.AddWithValue("@knives", reader["knives"]);
+				cmd.Parameters.AddWithValue("@zues", reader["zues"]);
 				cmd.Parameters.AddWithValue("@glv", reader["glv"]);
 				cmd.Parameters.AddWithValue("@map", reader["map"]);
 				cmd.Parameters.AddWithValue("@saved_at", reader["saved_at"]);
@@ -501,6 +511,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 					rounds INT NOT NULL,
 					opps FLOAT NOT NULL,
 					knives INT NOT NULL,
+					zues INT NOT NULL,
 					glv INT NOT NULL,
 					map VARCHAR(64) NOT NULL,
 					saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -536,6 +547,7 @@ public class Stats : BasePlugin, IPluginConfig<StatsConfig>
 					rounds INTEGER NOT NULL,
 					opps REAL NOT NULL,
 					knives INTEGER NOT NULL,
+					zues INTEGER NOT NULL,
 					glv INTEGER NOT NULL,
 					map TEXT NOT NULL,
 					saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
